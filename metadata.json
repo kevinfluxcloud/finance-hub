@@ -1,0 +1,8 @@
+{
+  "name": "Finance Hub",
+  "description": "Hub financeiro pessoal e familiar de alta precisão com controle de contas, receitas, despesas, parcelamentos, investimentos, quitação de dívidas, metas e reserva de emergência.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
