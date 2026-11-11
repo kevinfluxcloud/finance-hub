@@ -6,12 +6,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
-  FileSpreadsheet,
-  Database,
   Globe,
   LogOut,
   Plus,
-  RefreshCw,
   RotateCcw,
   Sparkles,
   User,
@@ -26,31 +23,21 @@ import {
   formatDate,
   getMonthName,
 } from '../../utils/formatters';
-import { exportToExcel } from '../../utils/storage';
 import { Badge, Button, Input, Modal } from '../common/UIComponents';
-import { SupabaseModal } from '../supabase/SupabaseModal';
 import { UserProfileModal } from '../auth/UserProfileModal';
 
 export const Navbar: React.FC<{
   onOpenQuickAction: () => void;
 }> = ({ onOpenQuickAction }) => {
   const {
-    data,
     netWorth,
     dateFilter,
     setDateFilter,
     setDateFilterPreset,
-    isSupabaseConnected,
-    isSupabaseSyncing,
-    lastSupabaseSync,
-    syncFromSupabase,
-    syncToSupabase,
-    refreshSupabaseConnection,
   } = useFinance();
 
   const { user, profile, signOut } = useAuth();
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
-  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DateFilterMode>(dateFilter.mode);
 
@@ -253,48 +240,6 @@ export const Navbar: React.FC<{
               {formatCurrency(netWorth.patrimonioLiquido)}
             </span>
           </div>
-
-          {/* Supabase Realtime & Persistence Indicator */}
-          <button
-            onClick={() => setIsSupabaseModalOpen(true)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
-              isSupabaseConnected
-                ? 'bg-[#22c55e]/15 border-[#22c55e]/40 text-[#22c55e] hover:bg-[#22c55e]/25'
-                : 'bg-[#1e293b] border-[#334155] text-[#94a3b8] hover:text-[#f8fafc] hover:border-[#3b82f6]/50'
-            }`}
-            title={
-              isSupabaseConnected
-                ? 'Conectado ao Supabase com Tempo Real ativo. Clique para gerenciar.'
-                : 'Supabase desconectado. Clique para conectar ao seu banco de dados.'
-            }
-          >
-            {isSupabaseSyncing ? (
-              <RefreshCw size={13} className="animate-spin text-[#3b82f6]" />
-            ) : isSupabaseConnected ? (
-              <span className="w-2 h-2 rounded-full bg-[#22c55e] animate-pulse shrink-0" />
-            ) : (
-              <Database size={13} className="text-[#94a3b8]" />
-            )}
-            <span className="hidden sm:inline">
-              {isSupabaseSyncing
-                ? 'Sincronizando...'
-                : isSupabaseConnected
-                ? 'Supabase Conectado'
-                : 'Conectar Supabase'}
-            </span>
-          </button>
-
-          {/* Quick Excel Export */}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => exportToExcel(data)}
-            title="Exportar dados consolidados em Excel (.xlsx)"
-            className="hidden md:inline-flex"
-            icon={<FileSpreadsheet size={14} className="text-[#22c55e]" />}
-          >
-            Excel
-          </Button>
 
           {/* Quick New Transaction Modal */}
           <Button
@@ -688,18 +633,6 @@ export const Navbar: React.FC<{
           </div>
         </div>
       </Modal>
-
-      {/* Supabase Connection & Realtime Modal */}
-      <SupabaseModal
-        isOpen={isSupabaseModalOpen}
-        onClose={() => setIsSupabaseModalOpen(false)}
-        isConnected={isSupabaseConnected}
-        isSyncing={isSupabaseSyncing}
-        lastSyncTime={lastSupabaseSync}
-        onPullFromSupabase={syncFromSupabase}
-        onPushToSupabase={syncToSupabase}
-        onConfigUpdated={refreshSupabaseConnection}
-      />
 
       {/* User Profile & Multi-Tenant Modal */}
       <UserProfileModal

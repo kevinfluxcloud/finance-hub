@@ -26,9 +26,9 @@ export function getStoredSupabaseConfig(): SupabaseConfig {
     console.error('Erro ao ler configuração do Supabase:', err);
   }
 
-  // Fallback to Vite environment variables if defined
-  const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+  // Fallback to Vite environment variables or default configured project
+  const envUrl = (import.meta.env.VITE_SUPABASE_URL || 'https://lusealiklabshoogemfl.supabase.co').trim();
+  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_kuBq4MkvD4HOvd_buUikYQ_s8PVepmC').trim();
 
   return {
     url: envUrl,
