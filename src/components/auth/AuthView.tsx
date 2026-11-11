@@ -12,9 +12,8 @@ import {
   ShieldCheck,
   Sparkles,
   User,
-  Users,
 } from 'lucide-react';
-import { useAuth, SIMULATED_USERS } from '../../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 import { Badge, Button, Input } from '../common/UIComponents';
 
 export const AuthView: React.FC = () => {
@@ -23,7 +22,6 @@ export const AuthView: React.FC = () => {
     signUpWithEmail,
     signInWithGoogle,
     resetPassword,
-    simulateUser,
   } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
@@ -366,73 +364,6 @@ export const AuthView: React.FC = () => {
               </button>
             </>
           )}
-        </div>
-
-        {/* Multi-Tenant Simulation Bar for Validation & Testing (Requirement 8) */}
-        <div className="bg-[#131b2e]/90 border border-[#3b82f6]/30 rounded-xl p-4 shadow-lg space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Users size={16} className="text-[#3b82f6]" />
-              <span className="text-xs font-bold text-[#f8fafc]">
-                Ambientes de Teste & Validação Multiusuário
-              </span>
-            </div>
-            <Badge variant="accent">3 PERFIS ISOLADOS</Badge>
-          </div>
-          <p className="text-[11px] text-[#94a3b8]">
-            Simule instantaneamente o isolamento entre 3 usuários independentes. Cada perfil possui
-            seu próprio banco de contas, transações e investimentos sem qualquer cruzamento de dados:
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-            <button
-              type="button"
-              onClick={() => simulateUser('A')}
-              className="p-2.5 bg-[#0b1326] hover:bg-[#1e293b] border border-[#334155] rounded text-left transition-all hover:border-[#3b82f6] cursor-pointer group"
-            >
-              <span className="text-[10px] text-[#3b82f6] uppercase font-mono block font-semibold">
-                Usuário A
-              </span>
-              <span className="text-xs font-bold text-[#f8fafc] block truncate">
-                {SIMULATED_USERS.A.profile.fullName}
-              </span>
-              <span className="text-[10px] text-[#94a3b8] block truncate">
-                Executivo Financeiro
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => simulateUser('B')}
-              className="p-2.5 bg-[#0b1326] hover:bg-[#1e293b] border border-[#334155] rounded text-left transition-all hover:border-[#22c55e] cursor-pointer group"
-            >
-              <span className="text-[10px] text-[#22c55e] uppercase font-mono block font-semibold">
-                Usuário B
-              </span>
-              <span className="text-xs font-bold text-[#f8fafc] block truncate">
-                {SIMULATED_USERS.B.profile.fullName}
-              </span>
-              <span className="text-[10px] text-[#94a3b8] block truncate">
-                Médica Investidora
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => simulateUser('C')}
-              className="p-2.5 bg-[#0b1326] hover:bg-[#1e293b] border border-[#334155] rounded text-left transition-all hover:border-[#f59e0b] cursor-pointer group"
-            >
-              <span className="text-[10px] text-[#f59e0b] uppercase font-mono block font-semibold">
-                Usuário C
-              </span>
-              <span className="text-xs font-bold text-[#f8fafc] block truncate">
-                {SIMULATED_USERS.C.profile.fullName}
-              </span>
-              <span className="text-[10px] text-[#94a3b8] block truncate">
-                Empreendedor Tech
-              </span>
-            </button>
-          </div>
         </div>
 
         {/* Footer Note */}
