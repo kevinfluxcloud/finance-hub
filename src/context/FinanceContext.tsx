@@ -199,6 +199,24 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const isRemoteUpdateRef = useRef(false);
   const autoSyncDebounceTimerRef = useRef<any>(null);
+  const currentDataRef = useRef<FinanceData>(data);
+
+  useEffect(() => {
+    currentDataRef.current = data;
+  }, [data]);
+
+  // Unified updater that ensures immediate synchronous persistence to localStorage
+  const updateFinanceData = useCallback(
+    (updater: (prev: FinanceData) => FinanceData) => {
+      setData((prev) => {
+        const next = updater(prev);
+        currentDataRef.current = next;
+        saveFinanceData(next, userId);
+        return next;
+      });
+    },
+    [userId]
+  );
 
   // Pull data from Supabase for current active user
   const syncFromSupabase = useCallback(async () => {
@@ -206,16 +224,45 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setSupabaseError(null);
     try {
       const res = await fetchFinanceDataFromSupabase(userId);
+      const localCurrent = currentDataRef.current || loadFinanceData(userId);
+
+      const localHasItems =
+        localCurrent.contas.some((c) => c.saldo !== 0) ||
+        localCurrent.receitas.length > 0 ||
+        localCurrent.despesas.length > 0 ||
+        localCurrent.investimentos.length > 0 ||
+        localCurrent.dividas.length > 0 ||
+        localCurrent.metas.length > 0;
+
       if (res.success && res.data) {
+        const remoteHasItems =
+          res.data.contas.some((c) => c.saldo !== 0) ||
+          res.data.receitas.length > 0 ||
+          res.data.despesas.length > 0 ||
+          res.data.investimentos.length > 0 ||
+          res.data.dividas.length > 0 ||
+          res.data.metas.length > 0;
+
+        // If local user has records but remote Supabase is completely blank,
+        // push local records to Supabase to initialize cloud database!
+        if (localHasItems && !remoteHasItems) {
+          await pushFinanceDataToSupabase(localCurrent, userId);
+          setIsSupabaseConnected(true);
+          setLastSupabaseSync(new Date());
+          return;
+        }
+
+        // Remote has active data: apply remote data
         isRemoteUpdateRef.current = true;
         setData(res.data);
+        currentDataRef.current = res.data;
         saveFinanceData(res.data, userId);
         setIsSupabaseConnected(true);
         setLastSupabaseSync(new Date());
       } else if (res.success && !res.data) {
-        // Connected, but database has no rows yet for this user. Push initial workspace!
+        // Connected, but database has no row yet for this user. Push current local workspace!
         setIsSupabaseConnected(true);
-        await pushFinanceDataToSupabase(data, userId);
+        await pushFinanceDataToSupabase(localCurrent, userId);
         setLastSupabaseSync(new Date());
       } else {
         setSupabaseError(res.error || 'Erro ao carregar dados do Supabase.');
@@ -225,14 +272,15 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } finally {
       setIsSupabaseSyncing(false);
     }
-  }, [data, userId]);
+  }, [userId]);
 
   // Push local data to Supabase for current active user
   const syncToSupabase = useCallback(async () => {
     setIsSupabaseSyncing(true);
     setSupabaseError(null);
     try {
-      const res = await pushFinanceDataToSupabase(data, userId);
+      const current = currentDataRef.current || data;
+      const res = await pushFinanceDataToSupabase(current, userId);
       if (res.success) {
         setIsSupabaseConnected(true);
         setLastSupabaseSync(new Date());
@@ -267,6 +315,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const unsubscribe = subscribeToSupabaseRealtime(userId, (remoteData) => {
       isRemoteUpdateRef.current = true;
       setData(remoteData);
+      currentDataRef.current = remoteData;
       saveFinanceData(remoteData, userId);
       setLastSupabaseSync(new Date());
     });
@@ -287,7 +336,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
 
     const config = getStoredSupabaseConfig();
-    if (config.url && config.anonKey && config.autoSync && isSupabaseConnected) {
+    if (config.url && config.anonKey && config.autoSync) {
       if (autoSyncDebounceTimerRef.current) {
         clearTimeout(autoSyncDebounceTimerRef.current);
       }
@@ -296,6 +345,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         try {
           const res = await pushFinanceDataToSupabase(data, userId);
           if (res.success) {
+            setIsSupabaseConnected(true);
             setLastSupabaseSync(new Date());
             setSupabaseError(null);
           }
@@ -304,7 +354,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         } finally {
           setIsSupabaseSyncing(false);
         }
-      }, 800);
+      }, 500);
     }
 
     return () => {
@@ -312,7 +362,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         clearTimeout(autoSyncDebounceTimerRef.current);
       }
     };
-  }, [data, userId, isSupabaseConnected]);
+  }, [data, userId]);
 
   // Calculations
   const netWorth = useMemo(() => calculateNetWorth(data), [data]);
@@ -380,21 +430,21 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       ...account,
       id: `acc-${Date.now()}`,
     };
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       contas: [...prev.contas, newAccount],
     }));
   };
 
   const updateAccount = (id: string, patch: Partial<Account>) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       contas: prev.contas.map((acc) => (acc.id === id ? { ...acc, ...patch } : acc)),
     }));
   };
 
   const deleteAccount = (id: string) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       contas: prev.contas.filter((acc) => acc.id !== id),
     }));
@@ -402,7 +452,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const transferFunds = (sourceId: string, targetId: string, amount: number) => {
     if (amount <= 0 || sourceId === targetId) return;
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       contas: prev.contas.map((acc) => {
         if (acc.id === sourceId) return { ...acc, saldo: acc.saldo - amount };
@@ -419,7 +469,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: `rec-${Date.now()}`,
     };
 
-    setData((prev) => {
+    updateFinanceData((prev) => {
       // If received, update account balance
       let updatedContas = prev.contas;
       if (newIncome.status === 'recebido' && newIncome.contaId) {
@@ -436,7 +486,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const updateIncome = (id: string, patch: Partial<Income>) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const existing = prev.receitas.find((r) => r.id === id);
       if (!existing) return prev;
       const updated = { ...existing, ...patch };
@@ -462,7 +512,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const deleteIncome = (id: string) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const inc = prev.receitas.find((r) => r.id === id);
       let updatedContas = prev.contas;
       if (inc && inc.status === 'recebido' && inc.contaId) {
@@ -479,7 +529,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const toggleIncomeStatus = (id: string) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const inc = prev.receitas.find((r) => r.id === id);
       if (!inc) return prev;
 
@@ -505,7 +555,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: `desp-${Date.now()}`,
     };
 
-    setData((prev) => {
+    updateFinanceData((prev) => {
       let updatedContas = prev.contas;
       if (newExpense.status === 'pago' && newExpense.contaId) {
         updatedContas = prev.contas.map((acc) =>
@@ -521,7 +571,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const updateExpense = (id: string, patch: Partial<Expense>) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const existing = prev.despesas.find((d) => d.id === id);
       if (!existing) return prev;
       const updated = { ...existing, ...patch };
@@ -547,7 +597,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const deleteExpense = (id: string) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const exp = prev.despesas.find((d) => d.id === id);
       let updatedContas = prev.contas;
       if (exp && exp.status === 'pago' && exp.contaId) {
@@ -564,7 +614,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const toggleExpenseStatus = (id: string) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const exp = prev.despesas.find((d) => d.id === id);
       if (!exp) return prev;
 
@@ -589,14 +639,14 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       ...installment,
       id: `parc-${Date.now()}`,
     });
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       parcelamentos: [newInst, ...prev.parcelamentos],
     }));
   };
 
   const updateInstallment = (id: string, patch: Partial<Installment>) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       parcelamentos: prev.parcelamentos.map((p) => {
         if (p.id !== id) return p;
@@ -606,7 +656,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const deleteInstallment = (id: string) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       parcelamentos: prev.parcelamentos.filter((p) => p.id !== id),
     }));
@@ -623,7 +673,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       observacao?: string;
     }
   ) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const target = prev.parcelamentos.find((p) => p.id === installmentId);
       if (!target) return prev;
 
@@ -684,7 +734,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const unpaySingleParcela = (installmentId: string, parcelaNumero: number) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const target = prev.parcelamentos.find((p) => p.id === installmentId);
       if (!target) return prev;
 
@@ -747,7 +797,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       observacao?: string;
     }
   ) => {
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const p = prev.parcelamentos.find((item) => item.id === id);
       if (!p) return prev;
 
@@ -823,14 +873,14 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
           ? ((investment.valorAtual - investment.valorInvestido) / investment.valorInvestido) * 100
           : 0,
     };
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       investimentos: [...prev.investimentos, newInv],
     }));
   };
 
   const updateInvestment = (id: string, patch: Partial<Investment>) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       investimentos: prev.investimentos.map((inv) => {
         if (inv.id !== id) return inv;
@@ -845,7 +895,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const deleteInvestment = (id: string) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       investimentos: prev.investimentos.filter((inv) => inv.id !== id),
     }));
@@ -853,7 +903,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const registerInvestmentAporte = (id: string, valor: number, debitAccountId?: string) => {
     if (valor <= 0) return;
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const updatedContas = debitAccountId
         ? prev.contas.map((acc) =>
             acc.id === debitAccountId ? { ...acc, saldo: acc.saldo - valor } : acc
@@ -885,7 +935,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const registerInvestmentResgate = (id: string, valor: number, creditAccountId?: string) => {
     if (valor <= 0) return;
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const updatedContas = creditAccountId
         ? prev.contas.map((acc) =>
             acc.id === creditAccountId ? { ...acc, saldo: acc.saldo + valor } : acc
@@ -921,21 +971,21 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       ...debt,
       id: `div-${Date.now()}`,
     };
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       dividas: [...prev.dividas, newDebt],
     }));
   };
 
   const updateDebt = (id: string, patch: Partial<Debt>) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       dividas: prev.dividas.map((d) => (d.id === id ? { ...d, ...patch } : d)),
     }));
   };
 
   const deleteDebt = (id: string) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       dividas: prev.dividas.filter((d) => d.id !== id),
     }));
@@ -943,7 +993,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const amortizeDebt = (id: string, valor: number, accountId?: string) => {
     if (valor <= 0) return;
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const targetDebt = prev.dividas.find((d) => d.id === id);
       if (!targetDebt) return prev;
 
@@ -989,21 +1039,21 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       ...goal,
       id: `meta-${Date.now()}`,
     };
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       metas: [...prev.metas, newGoal],
     }));
   };
 
   const updateGoal = (id: string, patch: Partial<Goal>) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       metas: prev.metas.map((m) => (m.id === id ? { ...m, ...patch } : m)),
     }));
   };
 
   const deleteGoal = (id: string) => {
-    setData((prev) => ({
+    updateFinanceData((prev) => ({
       ...prev,
       metas: prev.metas.filter((m) => m.id !== id),
     }));
@@ -1011,7 +1061,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const contributeToGoal = (id: string, amount: number, sourceAccountId?: string) => {
     if (amount <= 0) return;
-    setData((prev) => {
+    updateFinanceData((prev) => {
       const targetGoal = prev.metas.find((m) => m.id === id);
       if (!targetGoal) return prev;
 
@@ -1055,7 +1105,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // --- RECOVERY / BACKUP ---
   const resetToSampleData = () => {
-    setData(INITIAL_DATA);
+    updateFinanceData(() => INITIAL_DATA);
   };
 
   const clearAllData = () => {
@@ -1073,12 +1123,12 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         estrategiaQuitacaoPadrao: 'avalanche',
       },
     };
-    setData(emptyData);
+    updateFinanceData(() => emptyData);
   };
 
   const importData = (imported: FinanceData) => {
     if (!imported) return;
-    setData(imported);
+    updateFinanceData(() => imported);
   };
 
   return (

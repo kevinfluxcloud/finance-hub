@@ -552,8 +552,27 @@ export function loadFinanceData(userId?: string, isNewAccount = false): FinanceD
     const key = getUserStorageKey(userId);
     const raw = localStorage.getItem(key);
     if (!raw) {
-      // If user has no local storage yet:
-      // If this is a new registered user or specified user, create their clean isolated workspace.
+      // If user has no local storage key yet, check if root default storage has records to migrate
+      if (userId) {
+        try {
+          const rootRaw = localStorage.getItem(STORAGE_KEY);
+          if (rootRaw) {
+            const rootParsed = JSON.parse(rootRaw);
+            const hasData =
+              (rootParsed.contas && rootParsed.contas.length > 0) ||
+              (rootParsed.receitas && rootParsed.receitas.length > 0) ||
+              (rootParsed.despesas && rootParsed.despesas.length > 0);
+            if (hasData) {
+              saveFinanceData(rootParsed, userId);
+              return rootParsed;
+            }
+          }
+        } catch {
+          // Ignore fallback parse error
+        }
+      }
+
+      // If this is a new registered user, create their clean initial workspace.
       // If no user is specified (legacy or initial default demo), load INITIAL_DATA.
       const initial = (userId || isNewAccount) ? getInitialWorkspaceForUser() : INITIAL_DATA;
       saveFinanceData(initial, userId);

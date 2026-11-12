@@ -11,29 +11,32 @@ export interface SupabaseSyncState {
   hasTables: boolean;
 }
 
+export function getDocumentId(userId?: string): string {
+  if (!userId) return 'main';
+  return `user_${userId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
 // Load data from Supabase for a specific user
 export async function fetchFinanceDataFromSupabase(userId?: string): Promise<{
   success: boolean;
   data?: FinanceData;
   error?: string;
+  source?: 'unified' | 'relational';
 }> {
   const client = getSupabaseClient();
   if (!client) {
     return { success: false, error: 'Supabase não está configurado.' };
   }
 
-  const docId = userId ? `${userId}_main` : 'main';
+  const docId = getDocumentId(userId);
 
   try {
-    // 1. Try to read from unified sync table finance_hub_data for this user
-    let query = client.from('finance_hub_data').select('data, user_id');
-    if (userId) {
-      query = query.eq('id', docId);
-    } else {
-      query = query.eq('id', 'main');
-    }
-
-    const { data: unifiedRow, error: unifiedError } = await query.maybeSingle();
+    // 1. Primary: read from unified sync table finance_hub_data for this specific user document
+    const { data: unifiedRow, error: unifiedError } = await client
+      .from('finance_hub_data')
+      .select('id, data, updated_at')
+      .eq('id', docId)
+      .maybeSingle();
 
     if (!unifiedError && unifiedRow?.data && typeof unifiedRow.data === 'object') {
       const parsed = unifiedRow.data as FinanceData;
@@ -42,6 +45,7 @@ export async function fetchFinanceDataFromSupabase(userId?: string): Promise<{
 
       return {
         success: true,
+        source: 'unified',
         data: {
           contas: parsed.contas || [],
           receitas: parsed.receitas || [],
@@ -59,157 +63,129 @@ export async function fetchFinanceDataFromSupabase(userId?: string): Promise<{
       };
     }
 
-    // 2. If unified row doesn't exist, try reading individual relational tables for this user
-    let contasQuery = client.from('contas').select('*');
-    let receitasQuery = client.from('receitas').select('*');
-    let despesasQuery = client.from('despesas').select('*');
-    let parcelamentosQuery = client.from('parcelamentos').select('*');
-    let investimentosQuery = client.from('investimentos').select('*');
-    let dividasQuery = client.from('dividas').select('*');
-    let metasQuery = client.from('metas').select('*');
+    // 2. If user-specific doc wasn't found and userId is defined, check if legacy 'main' has active data
+    if (!unifiedRow && docId !== 'main') {
+      const { data: mainRow } = await client
+        .from('finance_hub_data')
+        .select('id, data, updated_at')
+        .eq('id', 'main')
+        .maybeSingle();
 
-    if (userId) {
-      contasQuery = contasQuery.eq('user_id', userId);
-      receitasQuery = receitasQuery.eq('user_id', userId);
-      despesasQuery = despesasQuery.eq('user_id', userId);
-      parcelamentosQuery = parcelamentosQuery.eq('user_id', userId);
-      investimentosQuery = investimentosQuery.eq('user_id', userId);
-      dividasQuery = dividasQuery.eq('user_id', userId);
-      metasQuery = metasQuery.eq('user_id', userId);
+      if (mainRow?.data && typeof mainRow.data === 'object') {
+        const parsed = mainRow.data as FinanceData;
+        const hasContent =
+          (parsed.contas && parsed.contas.length > 0) ||
+          (parsed.receitas && parsed.receitas.length > 0) ||
+          (parsed.despesas && parsed.despesas.length > 0);
+
+        if (hasContent) {
+          const rawParcelas = (parsed.parcelamentos || []) as Installment[];
+          return {
+            success: true,
+            source: 'unified',
+            data: {
+              contas: parsed.contas || [],
+              receitas: parsed.receitas || [],
+              despesas: parsed.despesas || [],
+              parcelamentos: rawParcelas.map(ensureInstallmentHistory),
+              investimentos: parsed.investimentos || [],
+              dividas: parsed.dividas || [],
+              metas: parsed.metas || [],
+              configuracoes: parsed.configuracoes || {
+                mesesReservaEmergencia: 6,
+                moeda: 'BRL',
+                estrategiaQuitacaoPadrao: 'avalanche',
+              },
+            },
+          };
+        }
+      }
     }
 
-    const [
-      contasRes,
-      receitasRes,
-      despesasRes,
-      parcelamentosRes,
-      investimentosRes,
-      dividasRes,
-      metasRes,
-    ] = await Promise.all([
-      contasQuery,
-      receitasQuery,
-      despesasQuery,
-      parcelamentosQuery,
-      investimentosQuery,
-      dividasQuery,
-      metasQuery,
-    ]);
+    // 3. Fallback: try individual relational tables
+    try {
+      const [contasRes, receitasRes, despesasRes] = await Promise.all([
+        client.from('contas').select('*').limit(200),
+        client.from('receitas').select('*').limit(500),
+        client.from('despesas').select('*').limit(500),
+      ]);
 
-    // Check if at least some tables exist and returned data
-    const hasAnyTableData =
-      (contasRes.data && contasRes.data.length > 0) ||
-      (receitasRes.data && receitasRes.data.length > 0) ||
-      (despesasRes.data && despesasRes.data.length > 0);
-
-    if (hasAnyTableData) {
-      const loadedData: FinanceData = {
-        contas: (contasRes.data || []).map((c: any) => ({
-          id: c.id,
-          nome: c.nome,
-          instituicao: c.instituicao,
-          saldo: Number(c.saldo || 0),
-          tipo: c.tipo,
-          cor: c.cor,
-          icone: c.icone,
-        })),
-        receitas: (receitasRes.data || []).map((r: any) => ({
-          id: r.id,
-          descricao: r.descricao,
-          valor: Number(r.valor || 0),
-          data: r.data,
-          contaId: r.conta_id,
-          categoria: r.categoria,
-          recorrente: Boolean(r.recorrente),
-          status: r.status,
-          observacao: r.observacao,
-        })),
-        despesas: (despesasRes.data || []).map((d: any) => ({
-          id: d.id,
-          descricao: d.descricao,
-          valor: Number(d.valor || 0),
-          data: d.data,
-          contaId: d.conta_id,
-          categoria: d.categoria,
-          recorrente: Boolean(d.recorrente),
-          status: d.status,
-          observacao: d.observacao,
-        })),
-        parcelamentos: (parcelamentosRes.data || []).map((p: any) =>
-          ensureInstallmentHistory({
-            id: p.id,
-            descricao: p.descricao,
-            valorTotal: Number(p.valor_total || 0),
-            parcelasTotal: Number(p.parcelas_total || 1),
-            parcelaAtual: Number(p.parcela_atual || 1),
-            valorParcela: Number(p.valor_parcela || 0),
-            categoria: p.categoria,
-            contaId: p.conta_id,
-            dataInicio: p.data_inicio,
-            status: p.status,
-            observacao: p.observacao,
-            historicoParcelas: p.historico_parcelas || [],
-          })
-        ),
-        investimentos: (investimentosRes.data || []).map((i: any) => ({
-          id: i.id,
-          nome: i.nome,
-          codigo: i.codigo,
-          categoria: i.categoria,
-          valorInvestido: Number(i.valor_investido || 0),
-          valorAtual: Number(i.valor_atual || 0),
-          aportes: Number(i.aportes || 0),
-          resgates: Number(i.resgates || 0),
-          rentabilidade: i.rentabilidade ? Number(i.rentabilidade) : undefined,
-          historico: i.historico,
-          dataInicio: i.data_inicio,
-          instituicao: i.instituicao,
-        })),
-        dividas: (dividasRes.data || []).map((d: any) => ({
-          id: d.id,
-          nome: d.nome,
-          credor: d.credor,
-          saldoInicial: Number(d.saldo_inicial || 0),
-          saldoAtual: Number(d.saldo_atual || 0),
-          taxaJurosMensal: Number(d.taxa_juros_mensal || 0),
-          valorParcela: Number(d.valor_parcela || 0),
-          parcelasRestantes: Number(d.parcelas_restantes || 0),
-          plano: d.plano || 'avalanche',
-          dataVencimento: d.data_vencimento,
-          categoria: d.categoria,
-        })),
-        metas: (metasRes.data || []).map((m: any) => ({
-          id: m.id,
-          titulo: m.titulo,
-          valorAlvo: Number(m.valor_alvo || 0),
-          acumulado: Number(m.acumulado || 0),
-          prazo: m.prazo,
-          categoria: m.categoria,
-          prioridade: m.prioridade,
-          status: m.status,
-          cor: m.cor,
-        })),
-        configuracoes: {
-          mesesReservaEmergencia: 6,
-          moeda: 'BRL',
-          estrategiaQuitacaoPadrao: 'avalanche',
-        },
+      const prefix = userId ? `${userId}__` : '';
+      const filterByPrefix = (arr: any[] | null) => {
+        if (!arr) return [];
+        if (!userId) return arr;
+        const matching = arr.filter((item) => item.id?.startsWith(prefix));
+        return matching.length > 0 ? matching : arr;
       };
 
-      return { success: true, data: loadedData };
+      const cList = filterByPrefix(contasRes.data);
+      const rList = filterByPrefix(receitasRes.data);
+      const dList = filterByPrefix(despesasRes.data);
+
+      if (cList.length > 0 || rList.length > 0 || dList.length > 0) {
+        const cleanId = (id: string) => (id.startsWith(prefix) ? id.slice(prefix.length) : id);
+        return {
+          success: true,
+          source: 'relational',
+          data: {
+            contas: cList.map((c: any) => ({
+              id: cleanId(c.id),
+              nome: c.nome || 'Conta',
+              instituicao: c.instituicao || '',
+              saldo: Number(c.saldo || 0),
+              tipo: c.tipo || 'corrente',
+              cor: c.cor,
+              icone: c.icone,
+            })),
+            receitas: rList.map((r: any) => ({
+              id: cleanId(r.id),
+              descricao: r.descricao,
+              valor: Number(r.valor || 0),
+              data: r.data,
+              contaId: r.conta_id ? cleanId(r.conta_id) : '',
+              categoria: r.categoria,
+              recorrente: Boolean(r.recorrente),
+              status: r.status,
+              observacao: r.observacao,
+            })),
+            despesas: dList.map((d: any) => ({
+              id: cleanId(d.id),
+              descricao: d.descricao,
+              valor: Number(d.valor || 0),
+              data: d.data,
+              contaId: d.conta_id ? cleanId(d.conta_id) : '',
+              categoria: d.categoria,
+              recorrente: Boolean(d.recorrente),
+              status: d.status,
+              observacao: d.observacao,
+            })),
+            parcelamentos: [],
+            investimentos: [],
+            dividas: [],
+            metas: [],
+            configuracoes: {
+              mesesReservaEmergencia: 6,
+              moeda: 'BRL',
+              estrategiaQuitacaoPadrao: 'avalanche',
+            },
+          },
+        };
+      }
+    } catch {
+      // Ignored: relational tables are secondary mirror
     }
 
-    // If tables exist but are empty for this user
+    // If tables exist but have no rows yet for this user
     if (!unifiedError) {
       return {
         success: true,
-        data: undefined, // Indicates connection ok, but no data in Supabase yet for this user
+        data: undefined, // Indicates connection ok, but database has no row yet for this user
       };
     }
 
     return {
       success: false,
-      error: unifiedError.message || 'Tabelas do Supabase ainda não inicializadas.',
+      error: unifiedError.message || 'Falha ao consultar Supabase.',
     };
   } catch (err: any) {
     console.error('Erro ao buscar dados do Supabase:', err);
@@ -218,7 +194,10 @@ export async function fetchFinanceDataFromSupabase(userId?: string): Promise<{
 }
 
 // Push local data to Supabase for a specific user
-export async function pushFinanceDataToSupabase(data: FinanceData, userId?: string): Promise<{
+export async function pushFinanceDataToSupabase(
+  data: FinanceData,
+  userId?: string
+): Promise<{
   success: boolean;
   error?: string;
 }> {
@@ -227,172 +206,156 @@ export async function pushFinanceDataToSupabase(data: FinanceData, userId?: stri
     return { success: false, error: 'Supabase não está configurado.' };
   }
 
-  const docId = userId ? `${userId}_main` : 'main';
+  const docId = getDocumentId(userId);
 
   try {
-    // 1. Upsert into unified sync table (instant atomic update with Realtime broadcast)
-    const payload: any = {
+    // 1. Primary: Upsert atomic JSON document in finance_hub_data (instant atomic update with Realtime broadcast)
+    const payload = {
       id: docId,
       data: data,
       updated_at: new Date().toISOString(),
     };
-    if (userId) {
-      payload.user_id = userId;
+
+    const { error: hubError } = await client.from('finance_hub_data').upsert(payload);
+
+    if (hubError) {
+      console.error('Erro ao gravar em finance_hub_data:', hubError);
+      return { success: false, error: hubError.message };
     }
 
-    const { error: unifiedError } = await client.from('finance_hub_data').upsert(payload);
+    // 2. Also mirror into individual relational tables using exact table schemas
+    const prefix = userId ? `${userId}__` : '';
+    const mapId = (id: string) => (id.startsWith(prefix) ? id : `${prefix}${id}`);
 
-    if (unifiedError) {
-      console.warn('Aviso: Falha ao gravar em finance_hub_data:', unifiedError.message);
-    }
-
-    // 2. Also mirror into individual relational tables with user_id attached
-    try {
+    // Fire relational updates asynchronously without blocking the main success
+    Promise.allSettled([
       // Contas
-      if (data.contas.length > 0) {
-        await client.from('contas').upsert(
-          data.contas.map((c) => ({
-            id: c.id,
-            user_id: userId || null,
-            nome: c.nome,
-            instituicao: c.instituicao,
-            saldo: c.saldo,
-            tipo: c.tipo,
-            cor: c.cor,
-            icone: c.icone,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
+      data.contas.length > 0
+        ? client.from('contas').upsert(
+            data.contas.map((c) => ({
+              id: mapId(c.id),
+              nome: c.nome,
+              instituicao: c.instituicao,
+              saldo: c.saldo,
+              tipo: c.tipo,
+              cor: c.cor,
+              icone: c.icone,
+            }))
+          )
+        : Promise.resolve(),
 
       // Receitas
-      if (data.receitas.length > 0) {
-        await client.from('receitas').upsert(
-          data.receitas.map((r) => ({
-            id: r.id,
-            user_id: userId || null,
-            descricao: r.descricao,
-            valor: r.valor,
-            data: r.data,
-            conta_id: r.contaId,
-            categoria: r.categoria,
-            recorrente: r.recorrente,
-            status: r.status,
-            observacao: r.observacao,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
+      data.receitas.length > 0
+        ? client.from('receitas').upsert(
+            data.receitas.map((r) => ({
+              id: mapId(r.id),
+              descricao: r.descricao,
+              valor: r.valor,
+              data: r.data,
+              conta_id: r.contaId ? mapId(r.contaId) : null,
+              categoria: r.categoria,
+              recorrente: Boolean(r.recorrente),
+              status: r.status,
+              observacao: r.observacao || null,
+            }))
+          )
+        : Promise.resolve(),
 
       // Despesas
-      if (data.despesas.length > 0) {
-        await client.from('despesas').upsert(
-          data.despesas.map((d) => ({
-            id: d.id,
-            user_id: userId || null,
-            descricao: d.descricao,
-            valor: d.valor,
-            data: d.data,
-            conta_id: d.contaId,
-            categoria: d.categoria,
-            recorrente: d.recorrente,
-            status: d.status,
-            observacao: d.observacao,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
+      data.despesas.length > 0
+        ? client.from('despesas').upsert(
+            data.despesas.map((d) => ({
+              id: mapId(d.id),
+              descricao: d.descricao,
+              valor: d.valor,
+              data: d.data,
+              conta_id: d.contaId ? mapId(d.contaId) : null,
+              categoria: d.categoria,
+              recorrente: Boolean(d.recorrente),
+              status: d.status,
+              observacao: d.observacao || null,
+            }))
+          )
+        : Promise.resolve(),
 
       // Parcelamentos
-      if (data.parcelamentos.length > 0) {
-        await client.from('parcelamentos').upsert(
-          data.parcelamentos.map((p) => ({
-            id: p.id,
-            user_id: userId || null,
-            descricao: p.descricao,
-            valor_total: p.valorTotal,
-            parcelas_total: p.parcelasTotal,
-            parcela_atual: p.parcelaAtual,
-            valor_parcela: p.valorParcela,
-            categoria: p.categoria,
-            conta_id: p.contaId,
-            data_inicio: p.dataInicio,
-            status: p.status,
-            observacao: p.observacao,
-            historico_parcelas: p.historicoParcelas,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
+      data.parcelamentos.length > 0
+        ? client.from('parcelamentos').upsert(
+            data.parcelamentos.map((p) => ({
+              id: mapId(p.id),
+              descricao: p.descricao,
+              valor_total: p.valorTotal,
+              parcelas_total: p.parcelasTotal,
+              parcela_atual: p.parcelaAtual,
+              valor_parcela: p.valorParcela,
+              categoria: p.categoria,
+              conta_id: p.contaId ? mapId(p.contaId) : null,
+              data_inicio: p.dataInicio,
+              status: p.status,
+              observacao: p.observacao || null,
+              historico_parcelas: p.historicoParcelas || [],
+            }))
+          )
+        : Promise.resolve(),
 
       // Investimentos
-      if (data.investimentos.length > 0) {
-        await client.from('investimentos').upsert(
-          data.investimentos.map((i) => ({
-            id: i.id,
-            user_id: userId || null,
-            nome: i.nome,
-            codigo: i.codigo,
-            categoria: i.categoria,
-            valor_investido: i.valorInvestido,
-            valor_atual: i.valorAtual,
-            aportes: i.aportes,
-            resgates: i.resgates,
-            rentabilidade: i.rentabilidade,
-            historico: i.historico,
-            data_inicio: i.dataInicio,
-            instituicao: i.instituicao,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
+      data.investimentos.length > 0
+        ? client.from('investimentos').upsert(
+            data.investimentos.map((i) => ({
+              id: mapId(i.id),
+              nome: i.nome,
+              codigo: i.codigo || null,
+              categoria: i.categoria,
+              valor_investido: i.valorInvestido,
+              valor_atual: i.valorAtual,
+              aportes: i.aportes,
+              resgates: i.resgates,
+              rentabilidade: i.rentabilidade || null,
+              historico: i.historico || [],
+              data_inicio: i.dataInicio,
+              instituicao: i.instituicao,
+            }))
+          )
+        : Promise.resolve(),
 
       // Dívidas
-      if (data.dividas.length > 0) {
-        await client.from('dividas').upsert(
-          data.dividas.map((d) => ({
-            id: d.id,
-            user_id: userId || null,
-            nome: d.nome,
-            credor: d.credor,
-            saldo_inicial: d.saldoInicial,
-            saldo_atual: d.saldoAtual,
-            taxa_juros_mensal: d.taxaJurosMensal,
-            valor_parcela: d.valorParcela,
-            parcelas_restantes: d.parcelasRestantes,
-            plano: d.plano,
-            data_vencimento: d.dataVencimento,
-            categoria: d.categoria,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
+      data.dividas.length > 0
+        ? client.from('dividas').upsert(
+            data.dividas.map((d) => ({
+              id: mapId(d.id),
+              nome: d.nome,
+              credor: d.credor,
+              saldo_inicial: d.saldoInicial,
+              saldo_atual: d.saldoAtual,
+              taxa_juros_mensal: d.taxaJurosMensal,
+              valor_parcela: d.valorParcela,
+              parcelas_restantes: d.parcelasRestantes,
+              plano: d.plano,
+              data_vencimento: d.dataVencimento || null,
+              categoria: d.categoria || null,
+            }))
+          )
+        : Promise.resolve(),
 
       // Metas
-      if (data.metas.length > 0) {
-        await client.from('metas').upsert(
-          data.metas.map((m) => ({
-            id: m.id,
-            user_id: userId || null,
-            titulo: m.titulo,
-            valor_alvo: m.valorAlvo,
-            acumulado: m.acumulado,
-            prazo: m.prazo,
-            categoria: m.categoria,
-            prioridade: m.prioridade,
-            status: m.status,
-            cor: m.cor,
-            updated_at: new Date().toISOString(),
-          }))
-        );
-      }
-    } catch (relationalError) {
-      console.warn('Aviso ao espelhar tabelas relacionais no Supabase:', relationalError);
-    }
-
-    if (unifiedError) {
-      return { success: false, error: unifiedError.message };
-    }
+      data.metas.length > 0
+        ? client.from('metas').upsert(
+            data.metas.map((m) => ({
+              id: mapId(m.id),
+              titulo: m.titulo,
+              valor_alvo: m.valorAlvo,
+              acumulado: m.acumulado,
+              prazo: m.prazo,
+              categoria: m.categoria,
+              prioridade: m.prioridade,
+              status: m.status,
+              cor: m.cor || null,
+            }))
+          )
+        : Promise.resolve(),
+    ]).catch((err) => {
+      console.warn('Aviso ao espelhar em tabelas relacionais:', err);
+    });
 
     return { success: true };
   } catch (err: any) {
@@ -401,16 +364,18 @@ export async function pushFinanceDataToSupabase(data: FinanceData, userId?: stri
   }
 }
 
-// Subscribe to real-time changes filtered by user
+// Subscribe to real-time changes filtered by user document ID
 export function subscribeToSupabaseRealtime(
   userId: string | undefined,
-  onDataChanged: (newData: FinanceData) => void
+  onDataChanged: (newData: FinanceData, updatedAt?: string) => void
 ): (() => void) | null {
   const client = getSupabaseClient();
   if (!client) return null;
 
+  const docId = getDocumentId(userId);
+
   try {
-    const channelName = `pfh-realtime-${userId || 'anon'}-${Math.random().toString(36).substring(2, 7)}`;
+    const channelName = `pfh-realtime-${docId}-${Math.random().toString(36).substring(2, 7)}`;
     const channel: RealtimeChannel = client
       .channel(channelName)
       .on(
@@ -419,28 +384,27 @@ export function subscribeToSupabaseRealtime(
           event: '*',
           schema: 'public',
           table: 'finance_hub_data',
-          ...(userId ? { filter: `id=eq.${userId}_main` } : {}),
+          filter: `id=eq.${docId}`,
         },
         (payload) => {
           if (payload.new && (payload.new as any).data) {
-            // Verify user isolation in payload
-            if (userId && (payload.new as any).user_id && (payload.new as any).user_id !== userId) {
-              return;
-            }
             const raw = (payload.new as any).data as FinanceData;
             const rawParcelas = (raw.parcelamentos || []) as Installment[];
             const normalizedParcelas = rawParcelas.map(ensureInstallmentHistory);
 
-            onDataChanged({
-              ...raw,
-              parcelamentos: normalizedParcelas,
-            });
+            onDataChanged(
+              {
+                ...raw,
+                parcelamentos: normalizedParcelas,
+              },
+              (payload.new as any).updated_at
+            );
           }
         }
       )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          console.log(`⚡ Conectado ao Supabase Realtime para usuário: ${userId || 'padrão'}`);
+          console.log(`⚡ Supabase Realtime ativo para documento: ${docId}`);
         }
       });
 
